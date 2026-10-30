@@ -422,13 +422,11 @@
                     applicationServerKey: urlBase64ToUint8Array(publicVapidKey)
                 });
 
-                const p256dh = subscription.getKey('p256dh') ? btoa(String.fromCharCode.apply(null, new Uint8Array(subscription.getKey('p256dh')))) : '';
-                const auth = subscription.getKey('auth') ? btoa(String.fromCharCode.apply(null, new Uint8Array(subscription.getKey('auth')))) : '';
-
+                const subJson = subscription.toJSON();
                 await supabaseClient.from('push_subscriptions_asrom').upsert({
-                    endpoint: subscription.endpoint,
-                    p256dh: p256dh,
-                    auth: auth
+                    endpoint: subJson.endpoint,
+                    p256dh: subJson.keys.p256dh,
+                    auth: subJson.keys.auth
                 }, { onConflict: 'endpoint' });
 
                 alert("Supabase Push-Alarm (AS Rom) erfolgreich aktiviert!");
