@@ -54,7 +54,7 @@
         .ticker-score { color: #ffffff; font-weight: bold; font-size: 0.9rem; background: #1c2638; padding: 2px 8px; border-radius: 4px; border: 1px solid var(--border-color); }
         @keyframes ticker-scroll { 0% { transform: translate3d(0, 0, 0); } 100% { transform: translate3d(-50%, 0, 0); } }
 
-        /* Tor-Alarm Banner */
+        /* Tor-Alarm / VAR Popup */
         #goalAlertBanner { display: none; position: fixed; top: 20px; left: 50%; transform: translateX(-50%); background: linear-gradient(135deg, #101620, #1d2738); border: 2px solid var(--accent-color); box-shadow: 0 10px 30px rgba(0,140,69,0.4); border-radius: 14px; padding: 18px 24px; z-index: 2000; width: 90%; max-width: 480px; text-align: center; animation: bounce-in 0.5s ease; cursor: pointer; }
         @keyframes bounce-in { 0% { transform: translate(-50%, -30px); opacity: 0; } 100% { transform: translate(-50%, 0); opacity: 1; } }
         .goal-alert-title { font-size: 1.2rem; font-weight: 900; color: var(--accent-color); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
@@ -147,7 +147,7 @@
     </style>
 </head>
 <body>
-    <!-- Live Tor-Alarm Popup -->
+    <!-- Live Tor-Alarm / VAR Popup -->
     <div id="goalAlertBanner" onclick="hideGoalAlert()">
         <div class="goal-alert-title" id="goalAlertTeam">🇮🇹 GOL!</div>
         <div class="goal-alert-scorer" id="goalAlertScorer">Torschütze & Minute</div>
@@ -285,10 +285,11 @@
         let globalTopScorers = [];
         let globalTopAssists = [];
         let globalYellowCards = [];
-        let previousScores = {};
+        let sentGoalsCache = {};
         let smartPollingInterval = null;
 
         function getTeamHighlightClass(name) {
+            if (!name) return '';
             if (name.includes("Roma")) return 'roma-highlight';
             if (name.includes("Inter")) return 'inter-highlight';
             if (name.includes("Lazio")) return 'lazio-highlight';
@@ -297,6 +298,7 @@
         }
 
         function getTeamRowClass(name) {
+            if (!name) return '';
             if (name.includes("Roma")) return 'roma-team';
             if (name.includes("Inter")) return 'inter-team';
             if (name.includes("Lazio")) return 'lazio-team';
@@ -305,6 +307,7 @@
         }
 
         function getTeamTickerClass(name) {
+            if (!name) return '';
             if (name.includes("Roma")) return 'roma-ticker';
             if (name.includes("Inter")) return 'inter-ticker';
             if (name.includes("Lazio")) return 'lazio-ticker';
@@ -328,6 +331,7 @@
 
         async function init() {
             await checkApiStatus();
+            await loadSentGoalsCache();
             await loadRounds();
             loadTable();
             loadTopScorers();
@@ -363,6 +367,78 @@
                 alert("Admin-Modus erfolgreich aktiviert!");
             } else if (enteredPin !== null) {
                 alert("Falsche PIN!");
+            }
+        }
+
+        async function loadSentGoalsCache() {
+            try {
+                const { data } = await supabaseClient.from('sent_goals_asrom').select('*');
+                if (data) {
+                    data.forEach(row => {
+                        sentGoalsCache[row.match_id] = { home: row.home_score, away: row.away_score };
+                    });
+                }
+            } catch (e) {}
+        }
+
+        async function recordGoalAndNotify(matchId, home, away, homeScore, awayScore, latestScorer, scoringTeam) {
+            sentGoalsCache[matchId] = { home: homeScore, away: awayScore };
+            
+            let cleanPlayer = latestScorer ? latestScorer.replace(/⚽\s*/, '').replace(/\(\d+['']\)/, '').trim() : '';
+            let minStr = latestScorer && latestScorer.match(/\(\d+['']\)/) ? ` ${latestScorer.match(/\(\d+['']\)/)[0]}` : '';
+
+            try {
+                await supabaseClient.from('sent_goals_asrom').upsert({
+                    match_id: String(matchId),
+                    home_score: homeScore,
+                    away_score: awayScore,
+                    updated_at: new Date().toISOString()
+                }, { onConflict: 'match_id' });
+
+                await fetch(`${SUPABASE_URL}/functions/v1/send-push`, {
+                    method: 'POST',
+                    mode: 'cors',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        table: 'push_subscriptions_asrom',
+                        title: `🇮🇹 ¡GOL! für ${scoringTeam}!`,
+                        body: `Stand: ${homeScore}:${awayScore}\n${home} : ${away}${cleanPlayer ? '\nSchütze: ' + cleanPlayer + minStr : ''}`
+                    })
+                });
+            } catch (e) {
+                console.error("Fehler beim Push / Record:", e);
+            }
+        }
+
+        // VAR-Rücknahme Funktion für die Serie A
+        async function recordVarCorrectionAndNotify(matchId, home, away, homeScore, awayScore) {
+            sentGoalsCache[matchId] = { home: homeScore, away: awayScore };
+
+            let pushTitle = `⚠️ Serie A: Gol annullato (VAR)!`;
+            let pushBody = `Das Tor wurde nach Videobeweis zurückgenommen!\nNeuer Spielstand: ${home} - ${away} (${homeScore}:${awayScore})`;
+
+            showVarCorrectionAlert(`${home} : ${away} (${homeScore}:${awayScore})`);
+
+            try {
+                await supabaseClient.from('sent_goals_asrom').upsert({
+                    match_id: String(matchId),
+                    home_score: homeScore,
+                    away_score: awayScore,
+                    updated_at: new Date().toISOString()
+                }, { onConflict: 'match_id' });
+
+                await fetch(`${SUPABASE_URL}/functions/v1/send-push`, {
+                    method: 'POST',
+                    mode: 'cors',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        table: 'push_subscriptions_asrom',
+                        title: pushTitle,
+                        body: pushBody
+                    })
+                });
+            } catch (e) {
+                console.error("Fehler beim Serie A VAR-Push:", e);
             }
         }
 
@@ -430,58 +506,23 @@
             }
         }
 
-        // Korrigierter Push-Dienst mit sent_goals_asrom, goal_id Duplikatschutz & Edge Function Aufruf
-        async function checkAllGoalsAndNotify(home, away, hScore, aScore, latestScorer, matchId, scoringTeam) {
-            if (!latestScorer || latestScorer.includes("Tor") || latestScorer.trim() === "⚽" || latestScorer.trim() === "Gol" || latestScorer.trim() === "Goal") return;
-
-            let uniqueGoalId = `ita_${matchId}_${hScore}:${aScore}_${latestScorer}`;
-            
-            let cleanPlayer = latestScorer.replace(/⚽\s*/, '').replace(/\(\d+['']\)/, '').replace('(Pen)', '').replace('(ET)', '').trim();
-            let minStr = latestScorer.match(/\(\d+['']\)/) ? ` ${latestScorer.match(/\(\d+['']\)/)[0]}` : '';
-
-            try {
-                let { data: existing, error: checkError } = await supabaseClient
-                    .from('sent_goals_asrom')
-                    .select('goal_id')
-                    .eq('goal_id', uniqueGoalId)
-                    .maybeSingle();
-
-                if (!existing && !checkError) {
-                    let { error: insertError } = await supabaseClient
-                        .from('sent_goals_asrom')
-                        .insert([{ 
-                            goal_id: uniqueGoalId,
-                            match_id: `ita_${matchId}`,
-                            home_score: hScore,
-                            away_score: aScore
-                        }]);
-
-                    if (!insertError) {
-                        await fetch(`${SUPABASE_URL}/functions/v1/send-push`, {
-                            method: 'POST',
-                            mode: 'cors',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                table: 'push_subscriptions_asrom',
-                                title: `🇮🇹 ¡GOL! für ${scoringTeam} zum ${hScore}:${aScore}`,
-                                body: `Torschütze: ${cleanPlayer}${minStr}\n${home} : ${away} (${hScore}:${aScore})`
-                            })
-                        });
-                    } else {
-                        console.error("Supabase Insert-Fehler:", insertError);
-                    }
-                }
-            } catch (e) {
-                console.error("Fehler beim AS Rom Tor-Cache & Push:", e);
-            }
-        }
-
-        function showGoalAlert(teamName, scorerInfo, matchInfo, matchId) {
+        function showGoalAlert(teamName, scorerInfo, matchInfo) {
+            const banner = document.getElementById("goalAlertBanner");
+            banner.style.background = "linear-gradient(135deg, #101620, #1d2738)";
             document.getElementById("goalAlertTeam").textContent = `🇮🇹 GOL per ${teamName}!`;
             document.getElementById("goalAlertScorer").textContent = scorerInfo;
             document.getElementById("goalAlertMatch").textContent = matchInfo;
-            document.getElementById("goalAlertBanner").style.display = "block";
-            
+            banner.style.display = "block";
+            setTimeout(() => { hideGoalAlert(); }, 10000);
+        }
+
+        function showVarCorrectionAlert(matchInfo) {
+            const banner = document.getElementById("goalAlertBanner");
+            banner.style.background = "linear-gradient(135deg, #36280c, #634d1e)";
+            document.getElementById("goalAlertTeam").textContent = "⚠️ Serie A: Gol annullato (VAR)!";
+            document.getElementById("goalAlertScorer").textContent = "Das Tor wurde nach Videobeweis zurückgenommen!";
+            document.getElementById("goalAlertMatch").textContent = `Neuer Spielstand: ${matchInfo}`;
+            banner.style.display = "block";
             setTimeout(() => { hideGoalAlert(); }, 10000);
         }
 
@@ -808,19 +849,24 @@
                         let isLive = ["1H", "2H", "ET", "P", "HT"].includes(m.fixture.status.short);
                         if (isLive) hasLiveGames = true;
 
-                        if (previousScores[fixtureId] !== undefined) {
-                            if (goalsHome > previousScores[fixtureId].home || goalsAway > previousScores[fixtureId].away) {
-                                let scoringTeam = goalsHome > previousScores[fixtureId].home ? home.name : away.name;
+                        let cachedScore = sentGoalsCache[fixtureId];
+                        if (!cachedScore) {
+                            sentGoalsCache[fixtureId] = { home: goalsHome, away: goalsAway };
+                        } else {
+                            // 1. Fall: Normales Tor (Spielstand steigt)
+                            if (goalsHome > cachedScore.home || goalsAway > cachedScore.away) {
+                                let scoringTeam = goalsHome > cachedScore.home ? home.name : away.name;
                                 let latestGoal = events.filter(ev => ev.type === 'Goal').pop();
-                                let scorerText = latestGoal ? `⚽ ${latestGoal.player.name} (${latestGoal.time.elapsed}')` : "⚽ Gol";
+                                let scorerText = latestGoal ? `${latestGoal.player.name} (${latestGoal.time.elapsed}. Min)` : "Gol";
                                 
-                                showGoalAlert(scoringTeam, latestGoal ? `${latestGoal.player.name} (${latestGoal.time.elapsed}. Min)` : "Gol", `${home.name} - ${away.name}`, fixtureId);
-                                
-                                // Automatischer Push & Datenbank-Eintrag für AS Rom
-                                checkAllGoalsAndNotify(home.name, away.name, goalsHome, goalsAway, scorerText, fixtureId, scoringTeam);
+                                showGoalAlert(scoringTeam, scorerText, `${home.name} - ${away.name}`);
+                                recordGoalAndNotify(fixtureId, home.name, away.name, goalsHome, goalsAway, latestGoal ? `⚽ ${latestGoal.player.name} (${latestGoal.time.elapsed}')` : '', scoringTeam);
+                            }
+                            // 2. Fall: VAR-Rücknahme (Spielstand sinkt)
+                            else if (goalsHome < cachedScore.home || goalsAway < cachedScore.away) {
+                                recordVarCorrectionAndNotify(fixtureId, home.name, away.name, goalsHome, goalsAway);
                             }
                         }
-                        previousScores[fixtureId] = { home: goalsHome, away: goalsAway };
 
                         let displayHome = m.goals.home !== null ? m.goals.home : "-";
                         let displayAway = m.goals.away !== null ? m.goals.away : "-";
@@ -978,8 +1024,15 @@
             try {
                 const res = await fetch(`https://v3.football.api-sports.io/standings?league=${leagueId}&season=${season}`, { headers: { "x-apisports-key": apiKey } });
                 const data = await res.json();
+                
                 if(data.response && data.response.length > 0) {
-                    const standings = data.response[0].league.standings[0];
+                    const leagueObj = data.response[0].league;
+                    if (!leagueObj.standings || leagueObj.standings.length === 0) {
+                        container.innerHTML = `<div style="padding: 10px; color: var(--text-muted); text-align: center;">Keine Tabellendaten für diese Saison (${season}) verfügbar.</div>`;
+                        return;
+                    }
+
+                    const standings = leagueObj.standings[0];
                     let html = `<table><tr><th>#</th><th>Team</th><th class="center">Sp</th><th class="center">Tore</th><th class="right">Pkt</th></tr>`;
                     
                     let top3Html = "";
@@ -1004,8 +1057,13 @@
                         </tr>`;
                     });
                     container.innerHTML = html + `</table>`;
+                } else {
+                    container.innerHTML = `<div style="padding: 10px; color: #ff3333; text-align: center;">Keine Daten von der API erhalten.</div>`;
                 }
-            } catch(e) {}
+            } catch(e) {
+                console.error("Fehler beim Laden der Tabelle:", e);
+                container.innerHTML = `<div style="padding: 10px; color: #ff3333; text-align: center;">Netzwerkfehler beim Laden der Tabelle.</div>`;
+            }
         }
 
         init();
