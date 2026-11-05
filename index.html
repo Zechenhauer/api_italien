@@ -401,8 +401,8 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         table: 'push_subscriptions_asrom',
-                        title: `🇮🇹 ¡GOL! für ${scoringTeam}!`,
-                        body: `Stand: ${homeScore}:${awayScore}\n${home} : ${away}${cleanPlayer ? '\nSchütze: ' + cleanPlayer + minStr : ''}`
+                        title: `🇮🇹 GOAL! für ${scoringTeam}!`,
+                        body: `Torschütze: ${cleanPlayer}${minStr}\n${home} : ${away} (${homeScore}:${awayScore})`
                     })
                 });
             } catch (e) {
